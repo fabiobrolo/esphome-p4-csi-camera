@@ -1,0 +1,7 @@
+secrets.yaml
+.esphome/
+__pycache__/
+*.pyc
+.pio/
+.pioenvs/
+ov02c10_regs_*.txt
