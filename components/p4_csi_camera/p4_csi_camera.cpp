@@ -190,6 +190,30 @@ void P4CSICamera::setup() {
   }
   ESP_LOGI(TAG, "Video streaming started!");
 
+  // Apply V4L2 controls (flip/mirror)
+  if (this->vertical_flip_ || this->horizontal_flip_) {
+    struct v4l2_ext_controls controls = {};
+    struct v4l2_ext_control control[1] = {};
+    controls.ctrl_class = V4L2_CTRL_CLASS_USER;
+    controls.count = 1;
+    controls.controls = control;
+
+    if (this->vertical_flip_) {
+      control[0].id = V4L2_CID_VFLIP;
+      control[0].value = 1;
+      if (ioctl(this->video_fd_, VIDIOC_S_EXT_CTRLS, &controls) != 0) {
+        ESP_LOGW(TAG, "Failed to set vertical flip");
+      }
+    }
+    if (this->horizontal_flip_) {
+      control[0].id = V4L2_CID_HFLIP;
+      control[0].value = 1;
+      if (ioctl(this->video_fd_, VIDIOC_S_EXT_CTRLS, &controls) != 0) {
+        ESP_LOGW(TAG, "Failed to set horizontal flip");
+      }
+    }
+  }
+
   // Step 7: Init JPEG encoder
   jpeg_encode_engine_cfg_t jpeg_cfg = {};
   jpeg_cfg.timeout_ms = 1000;

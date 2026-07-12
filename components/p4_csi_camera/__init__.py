@@ -2,11 +2,8 @@
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome import automation
 from esphome.const import CONF_ID, CONF_RESOLUTION
-from esphome.core import CORE
 from esphome.components.esp32 import add_idf_sdkconfig_option, add_idf_component
-from esphome.core import CORE, TimePeriod
 
 try:
     from esphome.cpp_helpers import setup_entity
@@ -24,6 +21,8 @@ CONF_RESET_PIN = "reset_pin"
 CONF_POWER_PIN = "power_pin"
 CONF_I2C_ID = "i2c_id"
 CONF_JPEG_QUALITY = "jpeg_quality"
+CONF_VERTICAL_FLIP = "vertical_flip"
+CONF_HORIZONTAL_FLIP = "horizontal_flip"
 
 p4_csi_camera_ns = cg.esphome_ns.namespace("p4_csi_camera")
 P4CSICamera = p4_csi_camera_ns.class_(
@@ -53,6 +52,8 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_RESET_PIN): cv.int_,
             cv.Optional(CONF_POWER_PIN): cv.int_,
             cv.Optional(CONF_JPEG_QUALITY, default=40): cv.int_range(min=10, max=100),
+            cv.Optional(CONF_VERTICAL_FLIP, default=False): cv.boolean,
+            cv.Optional(CONF_HORIZONTAL_FLIP, default=False): cv.boolean,
         }
     )
     .extend(cv.COMPONENT_SCHEMA)
@@ -79,6 +80,8 @@ async def to_code(config):
         cg.add(var.set_power_pin(config[CONF_POWER_PIN]))
 
     cg.add(var.set_jpeg_quality(config[CONF_JPEG_QUALITY]))
+    cg.add(var.set_vertical_flip(config[CONF_VERTICAL_FLIP]))
+    cg.add(var.set_horizontal_flip(config[CONF_HORIZONTAL_FLIP]))
 
     cg.add_define("USE_P4_CSI_CAMERA")
 
