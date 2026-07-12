@@ -69,6 +69,15 @@ class P4CSICamera : public camera::Camera {
   void set_vertical_flip(bool flip) { this->vertical_flip_ = flip; }
   void set_horizontal_flip(bool flip) { this->horizontal_flip_ = flip; }
 
+  // Runtime setters (apply immediately via V4L2 if initialized)
+  void set_jpeg_quality_runtime(uint8_t quality);
+  void set_vertical_flip_runtime(bool flip);
+  void set_horizontal_flip_runtime(bool flip);
+
+  uint8_t get_jpeg_quality() const { return this->jpeg_quality_; }
+  bool get_vertical_flip() const { return this->vertical_flip_; }
+  bool get_horizontal_flip() const { return this->horizontal_flip_; }
+
   void setup() override;
   void loop() override;
   void dump_config() override;
@@ -124,5 +133,9 @@ extern P4CSICamera *global_p4_csi_camera;
 
 }  // namespace p4_csi_camera
 }  // namespace esphome
+
+// Include platform headers so codegen can find the classes
+#include "p4_csi_camera_number.h"
+#include "p4_csi_camera_switch.h"
 
 #endif  // USE_ESP32_VARIANT_ESP32P4

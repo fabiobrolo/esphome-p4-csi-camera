@@ -13,6 +13,7 @@ except ImportError:
 CODEOWNERS = ["@sullb"]
 DEPENDENCIES = ["esp32"]
 AUTO_LOAD = ["camera", "psram"]
+MULTI_CONF = False
 
 CONF_DATA_LANES = "data_lanes"
 CONF_MAX_FRAMERATE = "max_framerate"
@@ -101,7 +102,9 @@ async def to_code(config):
         "CONFIG_ESP_VIDEO_ENABLE_ISP": True,
         "CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER": True,
         "CONFIG_ESP_VIDEO_DISABLE_MIPI_CSI_DRIVER_BACKUP_BUFFER": True,
+        "CONFIG_ESP_IPA_ENABLED": True,
         "CONFIG_ESP_TASK_WDT_TIMEOUT_S": 120,
+        "CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0": False,
         "CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1": False,
     }.items():
         add_idf_sdkconfig_option(opt, val)
@@ -117,5 +120,11 @@ async def to_code(config):
         name="esp_cam_sensor",
         repo="https://github.com/espressif/esp-video-components.git",
         path="esp_cam_sensor",
+        ref="master",
+    )
+    add_idf_component(
+        name="esp_ipa",
+        repo="https://github.com/espressif/esp-video-components.git",
+        path="esp_ipa",
         ref="master",
     )

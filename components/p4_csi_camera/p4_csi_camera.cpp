@@ -127,10 +127,28 @@ void P4CSICamera::setup() {
   ESP_LOGI(TAG, "Default format: %dx%d, pixfmt=0x%08x",
            fmt.fmt.pix.width, fmt.fmt.pix.height, fmt.fmt.pix.pixelformat);
 
+  // Log the pixel format as a FourCC string for readability
+  char fourcc[5] = {};
+  fourcc[0] = (fmt.fmt.pix.pixelformat >> 0) & 0xFF;
+  fourcc[1] = (fmt.fmt.pix.pixelformat >> 8) & 0xFF;
+  fourcc[2] = (fmt.fmt.pix.pixelformat >> 16) & 0xFF;
+  fourcc[3] = (fmt.fmt.pix.pixelformat >> 24) & 0xFF;
+  ESP_LOGI(TAG, "Default pixfmt FourCC: '%s'", fourcc);
+
   // Request RGB565 output format
   fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_RGB565;
   if (ioctl(this->video_fd_, VIDIOC_S_FMT, &fmt) != 0) {
     ESP_LOGW(TAG, "VIDIOC_S_FMT RGB565 failed, using default format");
+  }
+
+  // Re-read format to see what we actually got
+  if (ioctl(this->video_fd_, VIDIOC_G_FMT, &fmt) == 0) {
+    fourcc[0] = (fmt.fmt.pix.pixelformat >> 0) & 0xFF;
+    fourcc[1] = (fmt.fmt.pix.pixelformat >> 8) & 0xFF;
+    fourcc[2] = (fmt.fmt.pix.pixelformat >> 16) & 0xFF;
+    fourcc[3] = (fmt.fmt.pix.pixelformat >> 24) & 0xFF;
+    ESP_LOGI(TAG, "Actual format after S_FMT: %dx%d, pixfmt='%s' (0x%08x)",
+             fmt.fmt.pix.width, fmt.fmt.pix.height, fourcc, fmt.fmt.pix.pixelformat);
   }
 
   this->frame_width_ = fmt.fmt.pix.width;
@@ -190,29 +208,12 @@ void P4CSICamera::setup() {
   }
   ESP_LOGI(TAG, "Video streaming started!");
 
-  // Apply V4L2 controls (flip/mirror)
-  if (this->vertical_flip_ || this->horizontal_flip_) {
-    struct v4l2_ext_controls controls = {};
-    struct v4l2_ext_control control[1] = {};
-    controls.ctrl_class = V4L2_CTRL_CLASS_USER;
-    controls.count = 1;
-    controls.controls = control;
+  // Note: Flip/mirror is applied in software during the loop() frame processing.
+  // V4L2_CID_VFLIP/HFLIP are not supported by this sensor driver.
 
-    if (this->vertical_flip_) {
-      control[0].id = V4L2_CID_VFLIP;
-      control[0].value = 1;
-      if (ioctl(this->video_fd_, VIDIOC_S_EXT_CTRLS, &controls) != 0) {
-        ESP_LOGW(TAG, "Failed to set vertical flip");
-      }
-    }
-    if (this->horizontal_flip_) {
-      control[0].id = V4L2_CID_HFLIP;
-      control[0].value = 1;
-      if (ioctl(this->video_fd_, VIDIOC_S_EXT_CTRLS, &controls) != 0) {
-        ESP_LOGW(TAG, "Failed to set horizontal flip");
-      }
-    }
-  }
+  // Note: Auto White Balance is handled by the esp_ipa (Image Processing Algorithm)
+  // component via CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER.
+  // No manual V4L2 AWB control needed.
 
   // Step 7: Init JPEG encoder
   jpeg_encode_engine_cfg_t jpeg_cfg = {};
@@ -246,6 +247,9 @@ void P4CSICamera::setup() {
 void P4CSICamera::loop() {
   if (!this->initialized_) return;
 
+  // Feed watchdog every loop iteration to prevent WDT reset during idle
+  esp_task_wdt_reset();
+
   uint32_t now = millis();
   bool needs_image = this->has_requested_image_();
   bool streaming = this->stream_requesters_ != 0;
@@ -267,6 +271,60 @@ void P4CSICamera::loop() {
 
   uint8_t *frame_data = this->frame_buffers_[buf.index];
   size_t frame_size = buf.bytesused > 0 ? buf.bytesused : this->frame_buf_size_;
+
+  // Apply software white balance correction to RGB565 data
+  // The ISP demosaic produces green-biased output without AWB.
+  // RGB565 layout: RRRR RGGG GGGB BBBB (big-endian: high byte first)
+  // On little-endian (ESP32-P4): byte[0] = GGGB BBBB, byte[1] = RRRR RGGG
+  {
+    uint16_t *pixels = (uint16_t *)frame_data;
+    size_t num_pixels = frame_size / 2;
+
+    // White balance correction
+    for (size_t i = 0; i < num_pixels; i++) {
+      uint16_t px = pixels[i];
+      uint32_t r = (px >> 11) & 0x1F;  // 5 bits
+      uint32_t g = (px >> 5) & 0x3F;   // 6 bits
+      uint32_t b = px & 0x1F;           // 5 bits
+
+      // Boost red and blue to compensate for green Bayer dominance
+      // Gains: R=1.3, G=0.9, B=1.3 (gentle correction preserving brightness)
+      r = (r * 166) >> 7;  // * 1.30
+      g = (g * 115) >> 7;  // * 0.90
+      b = (b * 166) >> 7;  // * 1.30
+
+      // Clamp
+      if (r > 31) r = 31;
+      if (g > 63) g = 63;
+      if (b > 31) b = 31;
+
+      pixels[i] = (r << 11) | (g << 5) | b;
+    }
+
+    // Software vertical flip (swap rows top-to-bottom)
+    if (this->vertical_flip_) {
+      uint16_t *row_buf = (uint16_t *)alloca(this->frame_width_ * 2);
+      for (int y = 0; y < this->frame_height_ / 2; y++) {
+        uint16_t *top = pixels + y * this->frame_width_;
+        uint16_t *bot = pixels + (this->frame_height_ - 1 - y) * this->frame_width_;
+        memcpy(row_buf, top, this->frame_width_ * 2);
+        memcpy(top, bot, this->frame_width_ * 2);
+        memcpy(bot, row_buf, this->frame_width_ * 2);
+      }
+    }
+
+    // Software horizontal flip (mirror each row)
+    if (this->horizontal_flip_) {
+      for (int y = 0; y < this->frame_height_; y++) {
+        uint16_t *row = pixels + y * this->frame_width_;
+        for (int x = 0; x < this->frame_width_ / 2; x++) {
+          uint16_t tmp = row[x];
+          row[x] = row[this->frame_width_ - 1 - x];
+          row[this->frame_width_ - 1 - x] = tmp;
+        }
+      }
+    }
+  }
 
   // Feed the watchdog before heavy encode operation
   esp_task_wdt_reset();
@@ -344,6 +402,21 @@ camera::CameraImageReader *P4CSICamera::create_image_reader() {
 }
 bool P4CSICamera::has_requested_image_() const {
   return this->single_requesters_ != 0;
+}
+
+void P4CSICamera::set_jpeg_quality_runtime(uint8_t quality) {
+  this->jpeg_quality_ = quality;
+  ESP_LOGI(TAG, "JPEG quality set to %d", quality);
+}
+
+void P4CSICamera::set_vertical_flip_runtime(bool flip) {
+  this->vertical_flip_ = flip;
+  ESP_LOGI(TAG, "Vertical flip set to %s", flip ? "ON" : "OFF");
+}
+
+void P4CSICamera::set_horizontal_flip_runtime(bool flip) {
+  this->horizontal_flip_ = flip;
+  ESP_LOGI(TAG, "Horizontal flip set to %s", flip ? "ON" : "OFF");
 }
 
 }  // namespace p4_csi_camera

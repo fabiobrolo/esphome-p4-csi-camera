@@ -77,6 +77,7 @@ external_components:
 
 # CSI Camera configuration
 p4_csi_camera:
+  id: csi_cam
   name: "Panel Camera"
   resolution: 1928X1092
   data_lanes: 2
@@ -85,3 +86,17 @@ p4_csi_camera:
   idle_framerate: 0.1 fps
   # reset_pin: XX  # TBD - need to identify from schematic
   # power_pin: XX  # TBD - need to identify from schematic
+
+# Runtime-adjustable controls (appear as HA entities)
+number:
+  - platform: p4_csi_camera
+    camera_id: csi_cam
+    name: "Camera JPEG Quality"
+
+switch:
+  - platform: p4_csi_camera
+    camera_id: csi_cam
+    vertical_flip:
+      name: "Camera Vertical Flip"
+    horizontal_flip:
+      name: "Camera Horizontal Flip"
