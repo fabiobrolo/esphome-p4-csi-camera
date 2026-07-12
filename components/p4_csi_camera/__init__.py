@@ -23,6 +23,7 @@ CONF_IDLE_FRAMERATE = "idle_framerate"
 CONF_RESET_PIN = "reset_pin"
 CONF_POWER_PIN = "power_pin"
 CONF_I2C_ID = "i2c_id"
+CONF_JPEG_QUALITY = "jpeg_quality"
 
 p4_csi_camera_ns = cg.esphome_ns.namespace("p4_csi_camera")
 P4CSICamera = p4_csi_camera_ns.class_(
@@ -51,6 +52,7 @@ CONFIG_SCHEMA = (
             ),
             cv.Optional(CONF_RESET_PIN): cv.int_,
             cv.Optional(CONF_POWER_PIN): cv.int_,
+            cv.Optional(CONF_JPEG_QUALITY, default=40): cv.int_range(min=10, max=100),
         }
     )
     .extend(cv.COMPONENT_SCHEMA)
@@ -75,6 +77,8 @@ async def to_code(config):
         cg.add(var.set_reset_pin(config[CONF_RESET_PIN]))
     if CONF_POWER_PIN in config:
         cg.add(var.set_power_pin(config[CONF_POWER_PIN]))
+
+    cg.add(var.set_jpeg_quality(config[CONF_JPEG_QUALITY]))
 
     cg.add_define("USE_P4_CSI_CAMERA")
 

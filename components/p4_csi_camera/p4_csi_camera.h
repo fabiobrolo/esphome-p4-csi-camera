@@ -65,6 +65,7 @@ class P4CSICamera : public camera::Camera {
   void set_idle_update_interval(uint32_t interval) { this->idle_update_interval_ = interval; }
   void set_reset_pin(int8_t pin) { this->reset_pin_ = pin; }
   void set_power_pin(int8_t pin) { this->power_pin_ = pin; }
+  void set_jpeg_quality(uint8_t quality) { this->jpeg_quality_ = quality; }
 
   void setup() override;
   void loop() override;
@@ -85,8 +86,9 @@ class P4CSICamera : public camera::Camera {
   uint8_t data_lanes_{2};
   int8_t reset_pin_{-1};
   int8_t power_pin_{-1};
-  uint32_t max_update_interval_{200};
+  uint32_t max_update_interval_{500};
   uint32_t idle_update_interval_{10000};
+  uint8_t jpeg_quality_{40};
 
   // V4L2 video device
   int video_fd_{-1};

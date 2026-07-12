@@ -251,7 +251,7 @@ void P4CSICamera::loop() {
   jpeg_encode_cfg_t enc_cfg = {};
   enc_cfg.src_type = JPEG_ENCODE_IN_FORMAT_RGB565;
   enc_cfg.sub_sample = JPEG_DOWN_SAMPLING_YUV420;
-  enc_cfg.image_quality = 40;
+  enc_cfg.image_quality = this->jpeg_quality_;
   enc_cfg.width = this->frame_width_;
   enc_cfg.height = this->frame_height_;
 

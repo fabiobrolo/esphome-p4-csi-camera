@@ -80,7 +80,8 @@ p4_csi_camera:
   name: "Panel Camera"
   resolution: 1928X1092
   data_lanes: 2
-  max_framerate: 5 fps
+  max_framerate: 2 fps
+  jpeg_quality: 40
   idle_framerate: 0.1 fps
   # reset_pin: XX  # TBD - need to identify from schematic
   # power_pin: XX  # TBD - need to identify from schematic
