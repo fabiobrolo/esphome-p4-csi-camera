@@ -372,7 +372,7 @@ void P4CSICamera::setup() {
       return;
     }
 
-    this->frame_buffers_[i] = (uint8_t *)esp_video_mmap(
+    this->frame_buffers_[i] = (uint8_t *)mmap(
         nullptr, buf.length, PROT_READ | PROT_WRITE, MAP_SHARED, this->video_fd_, buf.m.offset);
     if (!this->frame_buffers_[i]) {
       char ebuf[64];
