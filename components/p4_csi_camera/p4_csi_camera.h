@@ -83,7 +83,8 @@ class P4CSICamera : public camera::Camera {
   void setup() override;
   void loop() override;
   void dump_config() override;
-  float get_setup_priority() const override { return setup_priority::DATA; }
+  float get_setup_priority() const override { return setup_priority::LATE; }
+  const std::string &get_status_msg() const { return this->status_msg_; }
 
   void start_stream(camera::CameraRequester requester) override;
   void stop_stream(camera::CameraRequester requester) override;
@@ -122,6 +123,7 @@ class P4CSICamera : public camera::Camera {
 
   // State
   bool initialized_{false};
+  std::string status_msg_{"not started"};
   std::shared_ptr<P4CSICameraImage> current_image_;
   uint8_t single_requesters_{0};
   uint8_t stream_requesters_{0};
