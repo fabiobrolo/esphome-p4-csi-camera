@@ -91,7 +91,7 @@ P4CSICamera::P4CSICamera() { global_p4_csi_camera = this; }
 void P4CSICamera::setup() {
   ESP_LOGI(TAG, "Setting up ESP32-P4 CSI Camera (OV02C10) via esp_video...");
   ESP_LOGI(TAG, "  Data lanes: %d", this->data_lanes_);
-  ESP_LOGI(TAG, "  Max update interval: %d ms", this->max_update_interval_);
+  ESP_LOGI(TAG, "  Max update interval: %d ms", (int)this->max_update_interval_);
 
   // Step 1: Initialize the video subsystem (handles CSI + ISP + sensor detection)
   esp_video_init_csi_config_t csi_config = {};
@@ -214,7 +214,7 @@ void P4CSICamera::setup() {
         0
       };
       snprintf(dbuf, sizeof(dbuf), "  fmt[%d]: '%s' (0x%08x) - %s\n",
-               fdesc.index, fourcc, (unsigned int)fdesc.pixelformat, fdesc.description);
+               (int)fdesc.index, fourcc, (unsigned int)fdesc.pixelformat, fdesc.description);
       this->diag_info_ += dbuf;
 
       if (fdesc.index == 0) {
@@ -241,7 +241,7 @@ void P4CSICamera::setup() {
       dev.default_w = test_fmt.fmt.pix.width;
       dev.default_h = test_fmt.fmt.pix.height;
       snprintf(dbuf, sizeof(dbuf), "  G_FMT: %dx%d pixfmt='%s' (0x%08x)\n",
-               test_fmt.fmt.pix.width, test_fmt.fmt.pix.height, fourcc, (unsigned int)test_fmt.fmt.pix.pixelformat);
+               (int)test_fmt.fmt.pix.width, (int)test_fmt.fmt.pix.height, fourcc, (unsigned int)test_fmt.fmt.pix.pixelformat);
       this->diag_info_ += dbuf;
     } else {
       snprintf(dbuf, sizeof(dbuf), "  G_FMT failed: errno=%d (%s)\n", errno, strerror(errno));
@@ -323,7 +323,7 @@ void P4CSICamera::setup() {
       def_fmt.fmt.pix.pixelformat = open_devs[chosen_idx].default_fmt;
 
       snprintf(dbuf, sizeof(dbuf), "Calling S_FMT with default (%dx%d, 0x%08x)...",
-               def_fmt.fmt.pix.width, def_fmt.fmt.pix.height, (unsigned int)def_fmt.fmt.pix.pixelformat);
+               (int)def_fmt.fmt.pix.width, (int)def_fmt.fmt.pix.height, (unsigned int)def_fmt.fmt.pix.pixelformat);
       this->diag_info_ += dbuf;
 
       if (ioctl(this->video_fd_, VIDIOC_S_FMT, &def_fmt) == 0) {
@@ -381,7 +381,7 @@ void P4CSICamera::setup() {
       0
     };
     snprintf(dbuf, sizeof(dbuf), "Final format after S_FMT: %dx%d, pixfmt='%s' (0x%08x)\n",
-             fmt.fmt.pix.width, fmt.fmt.pix.height, fourcc, (unsigned int)fmt.fmt.pix.pixelformat);
+             (int)fmt.fmt.pix.width, (int)fmt.fmt.pix.height, fourcc, (unsigned int)fmt.fmt.pix.pixelformat);
     this->diag_info_ += dbuf;
     ESP_LOGI(TAG, "%s", dbuf);
     this->frame_width_ = fmt.fmt.pix.width;
@@ -400,7 +400,7 @@ void P4CSICamera::setup() {
 
   if (ioctl(this->video_fd_, VIDIOC_REQBUFS, &req) != 0 || req.count == 0) {
     char buf[64];
-    snprintf(buf, sizeof(buf), "VIDIOC_REQBUFS failed: errno=%d, count=%d", errno, req.count);
+    snprintf(buf, sizeof(buf), "VIDIOC_REQBUFS failed: errno=%d, count=%d", errno, (int)req.count);
     this->status_msg_ = buf;
     ESP_LOGE(TAG, "%s", buf);
     this->status_set_error(LOG_STR("VIDIOC_REQBUFS failed"));
@@ -522,7 +522,7 @@ void P4CSICamera::loop() {
   // Step 2: Handle idle frame requests
   if (this->idle_update_interval_ != 0 && (now - this->last_idle_request_ >= this->idle_update_interval_)) {
     this->last_idle_request_ = now;
-    this->request_image(camera::IDLE_REQUESTER);
+    this->request_image(camera::IDLE);
   }
 
   // Step 3: Only process if someone actually requested an image
