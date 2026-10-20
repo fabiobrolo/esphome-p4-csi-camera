@@ -48,13 +48,13 @@ P4CSICamera *global_p4_csi_camera = nullptr;  // NOLINT
 // P4CSICameraImage
 // ===========================================================================
 
-P4CSICameraImage::P4CSICameraImage(P4CameraFrameBuffer *buffer, uint8_t requesters)
-    : buffer_(buffer), requesters_(requesters) {}
+P4CSICameraImage::P4CSICameraImage(uint8_t *data, size_t length, uint8_t requesters)
+    : data_(data), length_(length), requesters_(requesters) {}
 
-uint8_t *P4CSICameraImage::get_data_buffer() { return this->buffer_->data; }
-size_t P4CSICameraImage::get_data_length() { return this->buffer_->length; }
+uint8_t *P4CSICameraImage::get_data_buffer() { return this->data_; }
+size_t P4CSICameraImage::get_data_length() { return this->length_; }
 bool P4CSICameraImage::was_requested_by(camera::CameraRequester requester) const {
-  return this->requesters_ & (1 << (uint8_t)requester);
+  return (this->requesters_ & (1 << (uint8_t)requester)) != 0;
 }
 
 // ===========================================================================
@@ -67,10 +67,13 @@ void P4CSICameraImageReader::set_image(std::shared_ptr<camera::CameraImage> imag
 }
 size_t P4CSICameraImageReader::available() const {
   if (!this->image_) return 0;
-  return this->image_->get_data_length() - this->offset_;
+  size_t len = this->image_->get_data_length();
+  if (this->offset_ >= len) return 0;
+  return len - this->offset_;
 }
 uint8_t *P4CSICameraImageReader::peek_data_buffer() {
   if (!this->image_) return nullptr;
+  if (this->offset_ >= this->image_->get_data_length()) return nullptr;
   return this->image_->get_data_buffer() + this->offset_;
 }
 void P4CSICameraImageReader::consume_data(size_t consumed) { this->offset_ += consumed; }
@@ -507,14 +510,34 @@ void P4CSICamera::loop() {
   // Feed watchdog every loop iteration to prevent WDT reset during idle
   esp_task_wdt_reset();
 
+  // Step 1: Check if previous frame is still being read/transmitted by any listener
+  if (!this->can_return_image_()) {
+    return;
+  }
+  // Previous transmission finished; release our holding reference
+  this->current_image_.reset();
+
   uint32_t now = millis();
-  bool needs_image = this->has_requested_image_();
+
+  // Step 2: Handle idle frame requests
+  if (this->idle_update_interval_ != 0 && (now - this->last_idle_request_ >= this->idle_update_interval_)) {
+    this->last_idle_request_ = now;
+    this->request_image(camera::IDLE_REQUESTER);
+  }
+
+  // Step 3: Only process if someone actually requested an image
+  if (!this->has_requested_image_()) {
+    return;
+  }
+
+  // Step 4: Rate limit according to max_update_interval_ (or idle_update_interval_)
   bool streaming = this->stream_requesters_ != 0;
   uint32_t interval = streaming ? this->max_update_interval_ : this->idle_update_interval_;
+  if (interval > 0 && (now - this->last_update_ < interval)) {
+    return;
+  }
 
-  if (now - this->last_update_ < interval) return;
-
-  // Dequeue a frame
+  // Step 5: Dequeue a frame
   struct v4l2_buffer buf = {};
   buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   buf.memory = V4L2_MEMORY_MMAP;
@@ -529,48 +552,19 @@ void P4CSICamera::loop() {
   uint8_t *frame_data = this->frame_buffers_[buf.index];
   size_t frame_size = buf.bytesused > 0 ? buf.bytesused : this->frame_buf_size_;
 
-  // Apply software white balance correction to RGB565 data
-  // The ISP demosaic produces green-biased output without AWB.
-  // RGB565 layout: RRRR RGGG GGGB BBBB (big-endian: high byte first)
-  // On little-endian (ESP32-P4): byte[0] = GGGB BBBB, byte[1] = RRRR RGGG
-  {
+  // Software vertical / horizontal flip only if enabled
+  if (this->vertical_flip_ || this->horizontal_flip_) {
     uint16_t *pixels = (uint16_t *)frame_data;
-    size_t num_pixels = frame_size / 2;
-
-    // White balance correction
-    for (size_t i = 0; i < num_pixels; i++) {
-      uint16_t px = pixels[i];
-      uint32_t r = (px >> 11) & 0x1F;  // 5 bits
-      uint32_t g = (px >> 5) & 0x3F;   // 6 bits
-      uint32_t b = px & 0x1F;           // 5 bits
-
-      // Boost red and blue to compensate for green Bayer dominance
-      // Gains: R=1.3, G=0.9, B=1.3 (gentle correction preserving brightness)
-      r = (r * 166) >> 7;  // * 1.30
-      g = (g * 115) >> 7;  // * 0.90
-      b = (b * 166) >> 7;  // * 1.30
-
-      // Clamp
-      if (r > 31) r = 31;
-      if (g > 63) g = 63;
-      if (b > 31) b = 31;
-
-      pixels[i] = (r << 11) | (g << 5) | b;
-    }
-
-    // Software vertical flip (swap rows top-to-bottom)
     if (this->vertical_flip_) {
-      uint16_t *row_buf = (uint16_t *)alloca(this->frame_width_ * 2);
+      std::vector<uint16_t> row_buf(this->frame_width_);
       for (int y = 0; y < this->frame_height_ / 2; y++) {
         uint16_t *top = pixels + y * this->frame_width_;
         uint16_t *bot = pixels + (this->frame_height_ - 1 - y) * this->frame_width_;
-        memcpy(row_buf, top, this->frame_width_ * 2);
-        memcpy(top, bot, this->frame_width_ * 2);
-        memcpy(bot, row_buf, this->frame_width_ * 2);
+        memcpy(row_buf.data(), top, this->frame_width_ * sizeof(uint16_t));
+        memcpy(top, bot, this->frame_width_ * sizeof(uint16_t));
+        memcpy(bot, row_buf.data(), this->frame_width_ * sizeof(uint16_t));
       }
     }
-
-    // Software horizontal flip (mirror each row)
     if (this->horizontal_flip_) {
       for (int y = 0; y < this->frame_height_; y++) {
         uint16_t *row = pixels + y * this->frame_width_;
@@ -586,7 +580,7 @@ void P4CSICamera::loop() {
   // Feed the watchdog before heavy encode operation
   esp_task_wdt_reset();
 
-  // Encode directly from the V4L2 buffer (hardware JPEG encoder uses DMA, fast)
+  // Step 6: Encode directly from the V4L2 buffer (hardware JPEG encoder uses DMA, fast)
   jpeg_encode_cfg_t enc_cfg = {};
   enc_cfg.src_type = JPEG_ENCODE_IN_FORMAT_RGB565;
   enc_cfg.sub_sample = JPEG_DOWN_SAMPLING_YUV420;
@@ -605,27 +599,23 @@ void P4CSICamera::loop() {
     ESP_LOGW(TAG, "VIDIOC_QBUF failed");
   }
 
-  if (err != ESP_OK) {
+  if (err != ESP_OK || jpeg_size == 0) {
     ESP_LOGW(TAG, "JPEG encode failed: %s", esp_err_to_name(err));
     return;
   }
 
-  this->jpeg_buffer_.length = (size_t)jpeg_size;
   this->last_update_ = now;
+  ESP_LOGD(TAG, "Frame: %dx%d, JPEG: %u bytes", this->frame_width_, this->frame_height_, (unsigned int)jpeg_size);
 
-  ESP_LOGD(TAG, "Frame: %dx%d, JPEG: %d bytes", this->frame_width_, this->frame_height_, jpeg_size);
+  // Step 7: Dispatch new image and hold reference in current_image_ while listeners transmit
+  uint8_t requesters = this->single_requesters_ | this->stream_requesters_;
+  this->single_requesters_ = 0;
 
-  if (needs_image || streaming) {
-    uint8_t requesters = this->single_requesters_ | this->stream_requesters_;
-    this->single_requesters_ = 0;
-
-    auto image = std::make_shared<P4CSICameraImage>(&this->jpeg_buffer_, requesters);
-    this->current_image_ = image;
-    this->new_image_callback_.call(image);
-    for (auto *listener : this->listeners_) {
-      listener->on_camera_image(image);
-    }
-    this->current_image_.reset();
+  auto image = std::make_shared<P4CSICameraImage>(this->jpeg_out_buf_, (size_t)jpeg_size, requesters);
+  this->current_image_ = image;
+  this->new_image_callback_.call(image);
+  for (auto *listener : this->listeners_) {
+    listener->on_camera_image(image);
   }
 }
 
@@ -677,7 +667,11 @@ camera::CameraImageReader *P4CSICamera::create_image_reader() {
   return new P4CSICameraImageReader();
 }
 bool P4CSICamera::has_requested_image_() const {
-  return this->single_requesters_ != 0;
+  return this->single_requesters_ != 0 || this->stream_requesters_ != 0;
+}
+
+bool P4CSICamera::can_return_image_() const {
+  return this->current_image_ == nullptr || this->current_image_.use_count() == 1;
 }
 
 void P4CSICamera::set_jpeg_quality_runtime(uint8_t quality) {

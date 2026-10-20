@@ -32,13 +32,14 @@ struct P4CameraFrameBuffer {
 // CameraImage implementation
 class P4CSICameraImage : public camera::CameraImage {
  public:
-  P4CSICameraImage(P4CameraFrameBuffer *buffer, uint8_t requesters);
+  P4CSICameraImage(uint8_t *data, size_t length, uint8_t requesters);
   uint8_t *get_data_buffer() override;
   size_t get_data_length() override;
   bool was_requested_by(camera::CameraRequester requester) const override;
  protected:
-  P4CameraFrameBuffer *buffer_;
-  uint8_t requesters_;
+  uint8_t *data_{nullptr};
+  size_t length_{0};
+  uint8_t requesters_{0};
 };
 
 // CameraImageReader implementation
@@ -95,6 +96,7 @@ class P4CSICamera : public camera::Camera {
 
  protected:
   bool has_requested_image_() const;
+  bool can_return_image_() const;
 
   // Configuration
   i2c::I2CBus *i2c_bus_{nullptr};
@@ -130,6 +132,7 @@ class P4CSICamera : public camera::Camera {
   uint8_t single_requesters_{0};
   uint8_t stream_requesters_{0};
   uint64_t last_update_{0};
+  uint32_t last_idle_request_{0};
 
   // Callbacks
   CallbackManager<void(std::shared_ptr<camera::CameraImage>)> new_image_callback_{};
