@@ -489,7 +489,7 @@ void P4CSICamera::frame_task_loop_() {
     uint32_t interval = streaming ? this->max_update_interval_ : this->idle_update_interval_;
     if (interval > 0 && (now - this->last_update_ < interval)) {
       uint32_t wait_ms = interval - (now - this->last_update_);
-      vTaskDelay(pdMS_TO_TICKS(std::min(wait_ms, 20u)));
+      vTaskDelay(pdMS_TO_TICKS(wait_ms > 20 ? 20 : wait_ms));
       continue;
     }
 
