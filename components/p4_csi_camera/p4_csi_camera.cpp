@@ -25,14 +25,6 @@ void *const force_ov02c10_link_ref __attribute__((used)) = (void *)ov02c10_detec
 #include <cmath>
 #include <algorithm>
 
-#if defined(USE_ESP32_FRAMEWORK_ESP_IDF)
-#include "esphome/components/i2c/i2c_bus.h"
-#define protected public
-#define private public
-#include "esphome/components/i2c/i2c_bus_esp_idf.h"
-#undef protected
-#undef private
-#endif
 
 namespace esphome {
 namespace p4_csi_camera {
@@ -442,6 +434,25 @@ void P4CSICamera::setup() {
   this->jpeg_buffer_.width = this->frame_width_;
   this->jpeg_buffer_.height = this->frame_height_;
 
+  this->row_buffer_.resize(this->frame_width_);
+
+  BaseType_t res = xTaskCreatePinnedToCore(
+      P4CSICamera::frame_task,
+      "p4_csi_cam",
+      8192,
+      this,
+      1,
+      &this->task_handle_,
+      0
+  );
+  if (res != pdPASS) {
+    this->status_msg_ = "Failed to create camera FreeRTOS task";
+    ESP_LOGE(TAG, "%s", this->status_msg_.c_str());
+    this->status_set_error(LOG_STR("Task create failed"));
+    this->mark_failed();
+    return;
+  }
+
   this->status_msg_ = "Initialized successfully";
   this->initialized_ = true;
   ESP_LOGI(TAG, "Camera initialized successfully! Streaming %dx%d (Color correction: %s, R:%.2f G:%.2f B:%.2f)",
@@ -450,119 +461,152 @@ void P4CSICamera::setup() {
            this->red_gain_, this->green_gain_, this->blue_gain_);
 }
 
-void P4CSICamera::loop() {
-  if (!this->initialized_) return;
+void P4CSICamera::frame_task(void *pvParameters) {
+  auto *cam = static_cast<P4CSICamera *>(pvParameters);
+  cam->frame_task_loop_();
+}
 
-  esp_task_wdt_reset();
-
-  if (!this->can_return_image_()) {
-    return;
-  }
-  this->current_image_.reset();
-
-  uint32_t now = millis();
-
-  if (this->idle_update_interval_ != 0 && (now - this->last_idle_request_ >= this->idle_update_interval_)) {
-    this->last_idle_request_ = now;
-    this->request_image(camera::IDLE);
-  }
-
-  if (!this->has_requested_image_()) {
-    return;
-  }
-
-  bool streaming = this->stream_requesters_ != 0;
-  uint32_t interval = streaming ? this->max_update_interval_ : this->idle_update_interval_;
-  if (interval > 0 && (now - this->last_update_ < interval)) {
-    return;
-  }
-
-  struct v4l2_buffer buf = {};
-  buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  buf.memory = V4L2_MEMORY_MMAP;
-
-  if (ioctl(this->video_fd_, VIDIOC_DQBUF, &buf) != 0) {
-    if (errno != EAGAIN) {
-      ESP_LOGW(TAG, "VIDIOC_DQBUF failed: errno=%d", errno);
+void P4CSICamera::frame_task_loop_() {
+  while (true) {
+    if (!this->initialized_) {
+      vTaskDelay(pdMS_TO_TICKS(50));
+      continue;
     }
-    return;
-  }
 
-  uint8_t *frame_data = this->frame_buffers_[buf.index];
-  size_t frame_size = buf.bytesused > 0 ? buf.bytesused : this->frame_buf_size_;
+    uint32_t now = millis();
 
-  // Apply color correction / white balance LUT if enabled to fix green cast
-  if (this->color_correction_ && (this->red_gain_ != 1.0f || this->green_gain_ != 1.0f || this->blue_gain_ != 1.0f)) {
-    uint16_t *pixels = (uint16_t *)frame_data;
-    size_t num_pixels = (size_t)this->frame_width_ * this->frame_height_;
-    for (size_t i = 0; i < num_pixels; i++) {
-      uint16_t p = pixels[i];
-      pixels[i] = (this->r_lut_[(p >> 11) & 0x1F] << 11) |
-                  (this->g_lut_[(p >> 5) & 0x3F] << 5) |
-                  this->b_lut_[p & 0x1F];
+    if (this->idle_update_interval_ != 0 && (now - this->last_idle_request_ >= this->idle_update_interval_)) {
+      this->last_idle_request_ = now;
+      this->request_image(camera::IDLE);
     }
-  }
 
-  // Software vertical / horizontal flip only if enabled
-  if (this->vertical_flip_ || this->horizontal_flip_) {
-    uint16_t *pixels = (uint16_t *)frame_data;
-    if (this->vertical_flip_) {
-      std::vector<uint16_t> row_buf(this->frame_width_);
-      for (int y = 0; y < this->frame_height_ / 2; y++) {
-        uint16_t *top = pixels + y * this->frame_width_;
-        uint16_t *bot = pixels + (this->frame_height_ - 1 - y) * this->frame_width_;
-        memcpy(row_buf.data(), top, this->frame_width_ * sizeof(uint16_t));
-        memcpy(top, bot, this->frame_width_ * sizeof(uint16_t));
-        memcpy(bot, row_buf.data(), this->frame_width_ * sizeof(uint16_t));
+    if (!this->has_requested_image_()) {
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+
+    bool streaming = this->stream_requesters_ != 0;
+    uint32_t interval = streaming ? this->max_update_interval_ : this->idle_update_interval_;
+    if (interval > 0 && (now - this->last_update_ < interval)) {
+      uint32_t wait_ms = interval - (now - this->last_update_);
+      vTaskDelay(pdMS_TO_TICKS(std::min(wait_ms, 20u)));
+      continue;
+    }
+
+    if (!this->can_return_image_()) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
+
+    struct v4l2_buffer buf = {};
+    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buf.memory = V4L2_MEMORY_MMAP;
+
+    if (ioctl(this->video_fd_, VIDIOC_DQBUF, &buf) != 0) {
+      if (errno != EAGAIN) {
+        ESP_LOGW(TAG, "VIDIOC_DQBUF failed: errno=%d", errno);
+      }
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
+
+    uint8_t *frame_data = this->frame_buffers_[buf.index];
+    size_t frame_size = buf.bytesused > 0 ? buf.bytesused : this->frame_buf_size_;
+
+    // Apply color correction / white balance LUT if enabled to fix green cast
+    if (this->color_correction_ && (this->red_gain_ != 1.0f || this->green_gain_ != 1.0f || this->blue_gain_ != 1.0f)) {
+      uint16_t *pixels = (uint16_t *)frame_data;
+      size_t num_pixels = (size_t)this->frame_width_ * this->frame_height_;
+      for (size_t i = 0; i < num_pixels; i++) {
+        uint16_t p = pixels[i];
+        pixels[i] = (this->r_lut_[(p >> 11) & 0x1F] << 11) |
+                    (this->g_lut_[(p >> 5) & 0x3F] << 5) |
+                    this->b_lut_[p & 0x1F];
       }
     }
-    if (this->horizontal_flip_) {
-      for (int y = 0; y < this->frame_height_; y++) {
-        uint16_t *row = pixels + y * this->frame_width_;
-        for (int x = 0; x < this->frame_width_ / 2; x++) {
-          uint16_t tmp = row[x];
-          row[x] = row[this->frame_width_ - 1 - x];
-          row[this->frame_width_ - 1 - x] = tmp;
+
+    // Software vertical / horizontal flip only if enabled (using pre-allocated row_buffer_)
+    if (this->vertical_flip_ || this->horizontal_flip_) {
+      uint16_t *pixels = (uint16_t *)frame_data;
+      if (this->vertical_flip_) {
+        for (int y = 0; y < this->frame_height_ / 2; y++) {
+          uint16_t *top = pixels + y * this->frame_width_;
+          uint16_t *bot = pixels + (this->frame_height_ - 1 - y) * this->frame_width_;
+          memcpy(this->row_buffer_.data(), top, this->frame_width_ * sizeof(uint16_t));
+          memcpy(top, bot, this->frame_width_ * sizeof(uint16_t));
+          memcpy(bot, this->row_buffer_.data(), this->frame_width_ * sizeof(uint16_t));
+        }
+      }
+      if (this->horizontal_flip_) {
+        for (int y = 0; y < this->frame_height_; y++) {
+          uint16_t *row = pixels + y * this->frame_width_;
+          for (int x = 0; x < this->frame_width_ / 2; x++) {
+            uint16_t tmp = row[x];
+            row[x] = row[this->frame_width_ - 1 - x];
+            row[this->frame_width_ - 1 - x] = tmp;
+          }
         }
       }
     }
+
+    jpeg_encode_cfg_t enc_cfg = {};
+    enc_cfg.src_type = JPEG_ENCODE_IN_FORMAT_RGB565;
+    enc_cfg.sub_sample = JPEG_DOWN_SAMPLING_YUV420;
+    enc_cfg.image_quality = this->jpeg_quality_;
+    enc_cfg.width = this->frame_width_;
+    enc_cfg.height = this->frame_height_;
+
+    uint32_t jpeg_size = 0;
+    esp_err_t err = jpeg_encoder_process(this->jpeg_handle_, &enc_cfg,
+                                         frame_data, frame_size,
+                                         this->jpeg_out_buf_, this->jpeg_out_buf_size_,
+                                         &jpeg_size);
+
+    if (ioctl(this->video_fd_, VIDIOC_QBUF, &buf) != 0) {
+      ESP_LOGW(TAG, "VIDIOC_QBUF failed");
+    }
+
+    if (err != ESP_OK || jpeg_size == 0) {
+      ESP_LOGW(TAG, "JPEG encode failed: %s", esp_err_to_name(err));
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
+
+    this->last_update_ = now;
+    ESP_LOGD(TAG, "Frame: %dx%d, JPEG: %u bytes", this->frame_width_, this->frame_height_, (unsigned int)jpeg_size);
+
+    uint8_t requesters = this->single_requesters_ | this->stream_requesters_;
+    this->single_requesters_ = 0;
+
+    auto image = std::make_shared<P4CSICameraImage>(this->jpeg_out_buf_, (size_t)jpeg_size, requesters);
+
+    {
+      std::lock_guard<std::mutex> lock(this->image_mutex_);
+      this->new_image_ = image;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
+void P4CSICamera::loop() {
+  if (!this->initialized_) return;
+
+  std::shared_ptr<P4CSICameraImage> img;
+  {
+    std::lock_guard<std::mutex> lock(this->image_mutex_);
+    if (this->new_image_) {
+      img = std::move(this->new_image_);
+      this->new_image_.reset();
+    }
   }
 
-  esp_task_wdt_reset();
-
-  jpeg_encode_cfg_t enc_cfg = {};
-  enc_cfg.src_type = JPEG_ENCODE_IN_FORMAT_RGB565;
-  enc_cfg.sub_sample = JPEG_DOWN_SAMPLING_YUV420;
-  enc_cfg.image_quality = this->jpeg_quality_;
-  enc_cfg.width = this->frame_width_;
-  enc_cfg.height = this->frame_height_;
-
-  uint32_t jpeg_size = 0;
-  esp_err_t err = jpeg_encoder_process(this->jpeg_handle_, &enc_cfg,
-                                       frame_data, frame_size,
-                                       this->jpeg_out_buf_, this->jpeg_out_buf_size_,
-                                       &jpeg_size);
-
-  if (ioctl(this->video_fd_, VIDIOC_QBUF, &buf) != 0) {
-    ESP_LOGW(TAG, "VIDIOC_QBUF failed");
-  }
-
-  if (err != ESP_OK || jpeg_size == 0) {
-    ESP_LOGW(TAG, "JPEG encode failed: %s", esp_err_to_name(err));
-    return;
-  }
-
-  this->last_update_ = now;
-  ESP_LOGD(TAG, "Frame: %dx%d, JPEG: %u bytes", this->frame_width_, this->frame_height_, (unsigned int)jpeg_size);
-
-  uint8_t requesters = this->single_requesters_ | this->stream_requesters_;
-  this->single_requesters_ = 0;
-
-  auto image = std::make_shared<P4CSICameraImage>(this->jpeg_out_buf_, (size_t)jpeg_size, requesters);
-  this->current_image_ = image;
-  this->new_image_callback_.call(image);
-  for (auto *listener : this->listeners_) {
-    listener->on_camera_image(image);
+  if (img != nullptr) {
+    this->current_image_ = img;
+    this->new_image_callback_.call(img);
+    for (auto *listener : this->listeners_) {
+      listener->on_camera_image(img);
+    }
   }
 }
 
@@ -608,6 +652,10 @@ bool P4CSICamera::has_requested_image_() const {
 }
 
 bool P4CSICamera::can_return_image_() const {
+  std::lock_guard<std::mutex> lock(const_cast<std::mutex &>(this->image_mutex_));
+  if (this->new_image_ != nullptr) {
+    return false;
+  }
   return this->current_image_ == nullptr || this->current_image_.use_count() == 1;
 }
 

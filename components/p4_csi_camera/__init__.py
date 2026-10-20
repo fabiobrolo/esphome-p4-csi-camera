@@ -4,7 +4,11 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import i2c
 from esphome.const import CONF_ID, CONF_RESOLUTION
-from esphome.components.esp32 import add_idf_sdkconfig_option, add_idf_component
+from esphome.components.esp32 import (
+    add_idf_sdkconfig_option,
+    add_idf_component,
+    only_with_esp_idf,
+)
 
 try:
     from esphome.cpp_helpers import setup_entity
@@ -44,7 +48,8 @@ RESOLUTIONS = {
     "640X480": 2,
 }
 
-CONFIG_SCHEMA = (
+CONFIG_SCHEMA = cv.All(
+    only_with_esp_idf,
     cv.ENTITY_BASE_SCHEMA.extend(
         {
             cv.GenerateID(): cv.declare_id(P4CSICamera),

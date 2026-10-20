@@ -9,7 +9,9 @@
 #include "esphome/core/helpers.h"
 
 #include <vector>
+#include <mutex>
 #include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <freertos/semphr.h>
 
 #include "driver/jpeg_encode.h"
@@ -160,6 +162,14 @@ class P4CSICamera : public camera::Camera {
   uint8_t stream_requesters_{0};
   uint64_t last_update_{0};
   uint32_t last_idle_request_{0};
+
+  static void frame_task(void *pvParameters);
+  void frame_task_loop_();
+
+  TaskHandle_t task_handle_{nullptr};
+  std::mutex image_mutex_;
+  std::shared_ptr<P4CSICameraImage> new_image_{nullptr};
+  std::vector<uint16_t> row_buffer_;
 
   // Callbacks
   CallbackManager<void(std::shared_ptr<camera::CameraImage>)> new_image_callback_{};
