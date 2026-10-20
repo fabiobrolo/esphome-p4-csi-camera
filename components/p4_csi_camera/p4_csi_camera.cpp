@@ -39,6 +39,8 @@ class IDFI2CBusAccessor : public esphome::i2c::IDFI2CBus {
 };
 }  // namespace
 #endif
+
+namespace esphome {
 namespace p4_csi_camera {
 
 static const char *const TAG = "p4_csi_camera";
