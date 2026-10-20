@@ -19,7 +19,7 @@ enum NumberType : uint8_t {
 class P4CSICameraNumber : public number::Number, public Component {
  public:
   void set_camera(P4CSICamera *camera) { this->camera_ = camera; }
-  void set_number_type(NumberType type) { this->type_ = type; }
+  void set_number_type(uint8_t type) { this->type_ = (NumberType) type; }
 
   void setup() override {
     float val = 0.0f;
