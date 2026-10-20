@@ -25,6 +25,11 @@ CONF_I2C_ID = "i2c_id"
 CONF_JPEG_QUALITY = "jpeg_quality"
 CONF_VERTICAL_FLIP = "vertical_flip"
 CONF_HORIZONTAL_FLIP = "horizontal_flip"
+CONF_RED_GAIN = "red_gain"
+CONF_GREEN_GAIN = "green_gain"
+CONF_BLUE_GAIN = "blue_gain"
+CONF_COLOR_CORRECTION = "color_correction"
+CONF_AUTO_WHITE_BALANCE = "auto_white_balance"
 
 p4_csi_camera_ns = cg.esphome_ns.namespace("p4_csi_camera")
 P4CSICamera = p4_csi_camera_ns.class_(
@@ -59,6 +64,11 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_JPEG_QUALITY, default=40): cv.int_range(min=10, max=100),
             cv.Optional(CONF_VERTICAL_FLIP, default=False): cv.boolean,
             cv.Optional(CONF_HORIZONTAL_FLIP, default=False): cv.boolean,
+            cv.Optional(CONF_RED_GAIN, default=1.45): cv.float_range(min=0.1, max=4.0),
+            cv.Optional(CONF_GREEN_GAIN, default=0.85): cv.float_range(min=0.1, max=4.0),
+            cv.Optional(CONF_BLUE_GAIN, default=1.55): cv.float_range(min=0.1, max=4.0),
+            cv.Optional(CONF_COLOR_CORRECTION, default=True): cv.boolean,
+            cv.Optional(CONF_AUTO_WHITE_BALANCE, default=True): cv.boolean,
         }
     )
     .extend(cv.COMPONENT_SCHEMA)
@@ -91,6 +101,11 @@ async def to_code(config):
     cg.add(var.set_jpeg_quality(config[CONF_JPEG_QUALITY]))
     cg.add(var.set_vertical_flip(config[CONF_VERTICAL_FLIP]))
     cg.add(var.set_horizontal_flip(config[CONF_HORIZONTAL_FLIP]))
+    cg.add(var.set_red_gain(config[CONF_RED_GAIN]))
+    cg.add(var.set_green_gain(config[CONF_GREEN_GAIN]))
+    cg.add(var.set_blue_gain(config[CONF_BLUE_GAIN]))
+    cg.add(var.set_color_correction(config[CONF_COLOR_CORRECTION]))
+    cg.add(var.set_auto_white_balance(config[CONF_AUTO_WHITE_BALANCE]))
 
     cg.add_define("USE_P4_CSI_CAMERA")
     cg.add_build_flag("-Wl,-u,ov02c10_detect")

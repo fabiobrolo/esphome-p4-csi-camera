@@ -71,15 +71,30 @@ class P4CSICamera : public camera::Camera {
   void set_jpeg_quality(uint8_t quality) { this->jpeg_quality_ = quality; }
   void set_vertical_flip(bool flip) { this->vertical_flip_ = flip; }
   void set_horizontal_flip(bool flip) { this->horizontal_flip_ = flip; }
+  void set_red_gain(float gain) { this->red_gain_ = gain; this->recompute_lut_(); }
+  void set_green_gain(float gain) { this->green_gain_ = gain; this->recompute_lut_(); }
+  void set_blue_gain(float gain) { this->blue_gain_ = gain; this->recompute_lut_(); }
+  void set_color_correction(bool enable) { this->color_correction_ = enable; }
+  void set_auto_white_balance(bool enable) { this->auto_white_balance_ = enable; }
 
-  // Runtime setters (apply immediately via V4L2 if initialized)
+  // Runtime setters (apply immediately via V4L2/LUT if initialized)
   void set_jpeg_quality_runtime(uint8_t quality);
   void set_vertical_flip_runtime(bool flip);
   void set_horizontal_flip_runtime(bool flip);
+  void set_red_gain_runtime(float gain);
+  void set_green_gain_runtime(float gain);
+  void set_blue_gain_runtime(float gain);
+  void set_color_correction_runtime(bool enable);
+  void set_auto_white_balance_runtime(bool enable);
 
   uint8_t get_jpeg_quality() const { return this->jpeg_quality_; }
   bool get_vertical_flip() const { return this->vertical_flip_; }
   bool get_horizontal_flip() const { return this->horizontal_flip_; }
+  float get_red_gain() const { return this->red_gain_; }
+  float get_green_gain() const { return this->green_gain_; }
+  float get_blue_gain() const { return this->blue_gain_; }
+  bool get_color_correction() const { return this->color_correction_; }
+  bool get_auto_white_balance() const { return this->auto_white_balance_; }
 
   void setup() override;
   void loop() override;
@@ -97,6 +112,8 @@ class P4CSICamera : public camera::Camera {
  protected:
   bool has_requested_image_() const;
   bool can_return_image_() const;
+  void recompute_lut_();
+  void apply_hardware_controls_();
 
   // Configuration
   i2c::I2CBus *i2c_bus_{nullptr};
@@ -109,8 +126,19 @@ class P4CSICamera : public camera::Camera {
   bool vertical_flip_{false};
   bool horizontal_flip_{false};
 
-  // V4L2 video device
+  // Color correction & white balance
+  float red_gain_{1.45f};
+  float green_gain_{0.85f};
+  float blue_gain_{1.55f};
+  bool color_correction_{true};
+  bool auto_white_balance_{true};
+  uint8_t r_lut_[32]{};
+  uint8_t g_lut_[64]{};
+  uint8_t b_lut_[32]{};
+
+  // V4L2 video & ISP devices
   int video_fd_{-1};
+  int isp_fd_{-1};
   uint8_t *frame_buffers_[6]{};
   size_t frame_buf_size_{0};
   uint16_t frame_width_{0};
@@ -127,7 +155,6 @@ class P4CSICamera : public camera::Camera {
   bool initialized_{false};
   std::string status_msg_{"not started"};
   std::string chosen_path_{};
-  std::string diag_info_{};
   std::shared_ptr<P4CSICameraImage> current_image_;
   uint8_t single_requesters_{0};
   uint8_t stream_requesters_{0};
