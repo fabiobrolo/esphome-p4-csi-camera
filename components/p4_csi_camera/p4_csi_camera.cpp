@@ -18,6 +18,15 @@
 #include <string.h>
 #include <unistd.h>
 
+#if defined(USE_ESP32_FRAMEWORK_ESP_IDF)
+#include "esphome/components/i2c/i2c_bus.h"
+#define protected public
+#define private public
+#include "esphome/components/i2c/i2c_bus_esp_idf.h"
+#undef protected
+#undef private
+#endif
+
 namespace esphome {
 namespace p4_csi_camera {
 
@@ -67,14 +76,6 @@ void P4CSICameraImageReader::return_image() {
 // ===========================================================================
 // P4CSICamera
 // ===========================================================================
-
-#if defined(USE_ESP32_FRAMEWORK_ESP_IDF)
-#define protected public
-#define private public
-#include "esphome/components/i2c/i2c_bus_esp_idf.h"
-#undef protected
-#undef private
-#endif
 
 P4CSICamera::P4CSICamera() { global_p4_csi_camera = this; }
 
