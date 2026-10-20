@@ -14,9 +14,9 @@
 #include "esp_cam_sensor_detect.h"
 #include "ov02c10.h"
 
-// Force symbol reference so linker does not dead-strip ov02c10_sensor.o
+// Force symbol reference so linker extracts ov02c10_sensor.o from static library
 extern "C" esp_cam_sensor_device_t *ov02c10_detect(esp_cam_sensor_config_t *config);
-static void *volatile force_ov02c10_link_ref = (void *)ov02c10_detect;
+void *const force_ov02c10_link_ref __attribute__((used)) = (void *)ov02c10_detect;
 
 #include <fcntl.h>
 #include <sys/ioctl.h>
@@ -153,20 +153,22 @@ void P4CSICamera::setup() {
   this->diag_info_ += "=== P4 CSI Video Devices ===\n";
   char dbuf[256];
 
-  volatile void *force_ov02c10 = (void *)ov02c10_detect;
-  (void)force_ov02c10;
+  ESP_LOGI(TAG, "OV02C10 driver symbol reference: %p", (void *)ov02c10_detect);
 
-  extern const esp_cam_sensor_detect_fn_t __esp_cam_sensor_detect_fn_array_start[];
-  extern const esp_cam_sensor_detect_fn_t __esp_cam_sensor_detect_fn_array_end[];
-  size_t num_detect_fn = __esp_cam_sensor_detect_fn_array_end - __esp_cam_sensor_detect_fn_array_start;
-  snprintf(dbuf, sizeof(dbuf), "Registered cam sensor detect functions: %d\n", (int)num_detect_fn);
+  // Inspect the registered camera sensor detection table via official API
+  esp_cam_sensor_detect_fn_t *detect_start = nullptr;
+  esp_cam_sensor_detect_fn_t *detect_end = nullptr;
+  esp_cam_sensor_detect_get_array(&detect_start, &detect_end);
+  int num_detect_fn = (detect_end && detect_start) ? (int)(detect_end - detect_start) : 0;
+  snprintf(dbuf, sizeof(dbuf), "Registered cam sensor detect functions: %d\n", num_detect_fn);
   this->diag_info_ += dbuf;
-  for (size_t i = 0; i < num_detect_fn; i++) {
+  ESP_LOGI(TAG, "Registered camera sensor detect functions: %d", num_detect_fn);
+  for (int i = 0; i < num_detect_fn; i++) {
     snprintf(dbuf, sizeof(dbuf), "  detect_fn[%d]: port=%d, sccb_addr=0x%02x, fn=%p\n",
-             (int)i, __esp_cam_sensor_detect_fn_array_start[i].port,
-             __esp_cam_sensor_detect_fn_array_start[i].sccb_addr,
-             (void*)__esp_cam_sensor_detect_fn_array_start[i].detect);
+             i, detect_start[i].port, detect_start[i].sccb_addr, (void *)detect_start[i].detect);
     this->diag_info_ += dbuf;
+    ESP_LOGI(TAG, "  detect_fn[%d]: port=%d, sccb_addr=0x%02x, fn=%p",
+             i, detect_start[i].port, detect_start[i].sccb_addr, (void *)detect_start[i].detect);
   }
 
   for (const char *path : dev_paths) {
