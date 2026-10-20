@@ -124,6 +124,8 @@ class P4CSICamera : public camera::Camera {
   // State
   bool initialized_{false};
   std::string status_msg_{"not started"};
+  std::string chosen_path_{};
+  std::string diag_info_{};
   std::shared_ptr<P4CSICameraImage> current_image_;
   uint8_t single_requesters_{0};
   uint8_t stream_requesters_{0};

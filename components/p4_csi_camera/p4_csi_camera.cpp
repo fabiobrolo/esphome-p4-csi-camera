@@ -131,63 +131,90 @@ void P4CSICamera::setup() {
 
   // Try multiple device paths with O_RDWR
   const char *dev_paths[] = {"/dev/video0", "/dev/video1", "/dev/video2", "/dev/video3", "/dev/video4", "/dev/video10", "/dev/video20"};
-  int chosen_fd = -1;
-  const char *chosen_path = nullptr;
+
+  struct OpenDev {
+    const char *path;
+    int fd;
+    bool supports_rgb565;
+    uint32_t first_fmt;
+    uint32_t default_fmt;
+    uint32_t default_w;
+    uint32_t default_h;
+  };
+  std::vector<OpenDev> open_devs;
+
+  this->diag_info_.clear();
+  this->diag_info_ += "=== P4 CSI Video Devices ===\n";
+  char dbuf[256];
 
   for (const char *path : dev_paths) {
     int fd = open(path, O_RDWR, 0);
     if (fd < 0) {
-      ESP_LOGD(TAG, "  %s: not found or open failed (errno=%d)", path, errno);
       continue;
     }
 
+    OpenDev dev = {};
+    dev.path = path;
+    dev.fd = fd;
+
     struct v4l2_capability cap = {};
-    if (ioctl(fd, VIDIOC_QUERYCAP, &cap) == 0) {
-      ESP_LOGI(TAG, "Device %s (fd=%d): driver='%s', card='%s', caps=0x%08x",
-               path, fd, cap.driver, cap.card, cap.capabilities);
-    } else {
-      ESP_LOGW(TAG, "Device %s (fd=%d): VIDIOC_QUERYCAP failed (errno=%d)", path, fd, errno);
+    int cap_ret = ioctl(fd, VIDIOC_QUERYCAP, &cap);
+    snprintf(dbuf, sizeof(dbuf), "Device %s (fd=%d): driver='%s' card='%s' caps=0x%08x\n",
+             path, fd, (cap_ret == 0 ? (char*)cap.driver : "err"),
+             (cap_ret == 0 ? (char*)cap.card : "err"), (cap_ret == 0 ? (unsigned int)cap.capabilities : 0));
+    this->diag_info_ += dbuf;
+
+    // Enumerate formats
+    struct v4l2_fmtdesc fdesc = {};
+    fdesc.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    fdesc.index = 0;
+    while (ioctl(fd, VIDIOC_ENUM_FMT, &fdesc) == 0) {
+      char fourcc[5] = {
+        (char)((fdesc.pixelformat >> 0) & 0xFF),
+        (char)((fdesc.pixelformat >> 8) & 0xFF),
+        (char)((fdesc.pixelformat >> 16) & 0xFF),
+        (char)((fdesc.pixelformat >> 24) & 0xFF),
+        0
+      };
+      snprintf(dbuf, sizeof(dbuf), "  fmt[%d]: '%s' (0x%08x) - %s\n",
+               fdesc.index, fourcc, (unsigned int)fdesc.pixelformat, fdesc.description);
+      this->diag_info_ += dbuf;
+
+      if (fdesc.index == 0) {
+        dev.first_fmt = fdesc.pixelformat;
+      }
+      if (fdesc.pixelformat == V4L2_PIX_FMT_RGB565) {
+        dev.supports_rgb565 = true;
+      }
+      fdesc.index++;
     }
 
+    // Default format
     struct v4l2_format test_fmt = {};
     test_fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    int ret = ioctl(fd, VIDIOC_G_FMT, &test_fmt);
-    if (ret == 0) {
-      char fourcc_test[5] = {};
-      fourcc_test[0] = (test_fmt.fmt.pix.pixelformat >> 0) & 0xFF;
-      fourcc_test[1] = (test_fmt.fmt.pix.pixelformat >> 8) & 0xFF;
-      fourcc_test[2] = (test_fmt.fmt.pix.pixelformat >> 16) & 0xFF;
-      fourcc_test[3] = (test_fmt.fmt.pix.pixelformat >> 24) & 0xFF;
-      ESP_LOGI(TAG, "Device %s supports VIDIOC_G_FMT! Current format: %dx%d, pixfmt='%s' (0x%08x)",
-               path, test_fmt.fmt.pix.width, test_fmt.fmt.pix.height, fourcc_test, test_fmt.fmt.pix.pixelformat);
-      if (chosen_fd < 0) {
-        chosen_fd = fd;
-        chosen_path = path;
-        continue;
-      }
+    if (ioctl(fd, VIDIOC_G_FMT, &test_fmt) == 0) {
+      char fourcc[5] = {
+        (char)((test_fmt.fmt.pix.pixelformat >> 0) & 0xFF),
+        (char)((test_fmt.fmt.pix.pixelformat >> 8) & 0xFF),
+        (char)((test_fmt.fmt.pix.pixelformat >> 16) & 0xFF),
+        (char)((test_fmt.fmt.pix.pixelformat >> 24) & 0xFF),
+        0
+      };
+      dev.default_fmt = test_fmt.fmt.pix.pixelformat;
+      dev.default_w = test_fmt.fmt.pix.width;
+      dev.default_h = test_fmt.fmt.pix.height;
+      snprintf(dbuf, sizeof(dbuf), "  G_FMT: %dx%d pixfmt='%s' (0x%08x)\n",
+               test_fmt.fmt.pix.width, test_fmt.fmt.pix.height, fourcc, (unsigned int)test_fmt.fmt.pix.pixelformat);
+      this->diag_info_ += dbuf;
     } else {
-      ESP_LOGW(TAG, "Device %s: VIDIOC_G_FMT failed (errno=%d, %s)", path, errno, strerror(errno));
+      snprintf(dbuf, sizeof(dbuf), "  G_FMT failed: errno=%d (%s)\n", errno, strerror(errno));
+      this->diag_info_ += dbuf;
     }
 
-    if (fd != chosen_fd) {
-      close(fd);
-    }
+    open_devs.push_back(dev);
   }
 
-  if (chosen_fd < 0) {
-    // If G_FMT didn't succeed on any device, fallback to first openable device
-    for (const char *path : dev_paths) {
-      int fd = open(path, O_RDWR, 0);
-      if (fd >= 0) {
-        chosen_fd = fd;
-        chosen_path = path;
-        ESP_LOGW(TAG, "Fallback selecting %s (fd=%d) despite G_FMT failure", path, fd);
-        break;
-      }
-    }
-  }
-
-  if (chosen_fd < 0) {
+  if (open_devs.empty()) {
     char buf[128];
     snprintf(buf, sizeof(buf), "No video device openable (errno=%d)", errno);
     this->status_msg_ = buf;
@@ -197,70 +224,89 @@ void P4CSICamera::setup() {
     return;
   }
 
-  this->video_fd_ = chosen_fd;
-  ESP_LOGI(TAG, "Selected video device: %s (fd=%d)", chosen_path, this->video_fd_);
-
-  // Step 3: Enumerate and set pixel format
-  struct v4l2_fmtdesc fmtdesc = {};
-  fmtdesc.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  fmtdesc.index = 0;
-  ESP_LOGI(TAG, "Supported formats for %s:", chosen_path);
-  while (ioctl(this->video_fd_, VIDIOC_ENUM_FMT, &fmtdesc) == 0) {
-    char fourcc_desc[5] = {
-      (char)((fmtdesc.pixelformat >> 0) & 0xFF),
-      (char)((fmtdesc.pixelformat >> 8) & 0xFF),
-      (char)((fmtdesc.pixelformat >> 16) & 0xFF),
-      (char)((fmtdesc.pixelformat >> 24) & 0xFF),
-      0
-    };
-    ESP_LOGI(TAG, "  [%d] '%s' (0x%08x) - %s",
-             fmtdesc.index, fourcc_desc, fmtdesc.pixelformat, fmtdesc.description);
-    fmtdesc.index++;
+  // Choose the best device: prefer one that supports RGB565 directly
+  int chosen_idx = 0;
+  for (size_t i = 0; i < open_devs.size(); i++) {
+    if (open_devs[i].supports_rgb565) {
+      chosen_idx = i;
+      break;
+    }
   }
 
-  struct v4l2_format fmt = {};
-  fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  if (ioctl(this->video_fd_, VIDIOC_G_FMT, &fmt) == 0) {
-    char fourcc_cur[5] = {
-      (char)((fmt.fmt.pix.pixelformat >> 0) & 0xFF),
-      (char)((fmt.fmt.pix.pixelformat >> 8) & 0xFF),
-      (char)((fmt.fmt.pix.pixelformat >> 16) & 0xFF),
-      (char)((fmt.fmt.pix.pixelformat >> 24) & 0xFF),
-      0
-    };
-    ESP_LOGI(TAG, "Default driver format: %dx%d, pixfmt='%s' (0x%08x)",
-             fmt.fmt.pix.width, fmt.fmt.pix.height, fourcc_cur, fmt.fmt.pix.pixelformat);
+  this->video_fd_ = open_devs[chosen_idx].fd;
+  this->chosen_path_ = open_devs[chosen_idx].path;
+  snprintf(dbuf, sizeof(dbuf), "Selected device: %s (fd=%d, supports_rgb565=%d)\n",
+           this->chosen_path_.c_str(), this->video_fd_, open_devs[chosen_idx].supports_rgb565);
+  this->diag_info_ += dbuf;
+  ESP_LOGI(TAG, "%s", dbuf);
+
+  // Close other fds
+  for (size_t i = 0; i < open_devs.size(); i++) {
+    if ((int)i != chosen_idx) {
+      close(open_devs[i].fd);
+    }
   }
 
-  // Request RGB565 output format at native sensor resolution
+  // Step 3: Set the pixel format
   struct v4l2_format req_fmt = {};
   req_fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   req_fmt.fmt.pix.width = SENSOR_WIDTH;
   req_fmt.fmt.pix.height = SENSOR_HEIGHT;
   req_fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_RGB565;
 
-  if (ioctl(this->video_fd_, VIDIOC_S_FMT, &req_fmt) != 0) {
-    ESP_LOGW(TAG, "VIDIOC_S_FMT RGB565 (%dx%d) failed (errno=%d, %s)",
-             SENSOR_WIDTH, SENSOR_HEIGHT, errno, strerror(errno));
+  snprintf(dbuf, sizeof(dbuf), "Calling S_FMT RGB565 (%dx%d)...", SENSOR_WIDTH, SENSOR_HEIGHT);
+  this->diag_info_ += dbuf;
 
-    // Fallback: try setting the driver's default format from G_FMT
-    struct v4l2_format def_fmt = {};
-    def_fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (ioctl(this->video_fd_, VIDIOC_G_FMT, &def_fmt) == 0) {
-      ESP_LOGI(TAG, "Trying fallback to driver format: %dx%d, pixfmt=0x%08x",
-               def_fmt.fmt.pix.width, def_fmt.fmt.pix.height, def_fmt.fmt.pix.pixelformat);
-      if (ioctl(this->video_fd_, VIDIOC_S_FMT, &def_fmt) != 0) {
-        ESP_LOGE(TAG, "VIDIOC_S_FMT default format fallback failed (errno=%d, %s)",
-                 errno, strerror(errno));
-        char buf[64];
-        snprintf(buf, sizeof(buf), "VIDIOC_S_FMT failed: errno=%d", errno);
-        this->status_msg_ = buf;
-        this->status_set_error(LOG_STR("VIDIOC_S_FMT failed"));
-        this->mark_failed();
-        return;
+  if (ioctl(this->video_fd_, VIDIOC_S_FMT, &req_fmt) != 0) {
+    snprintf(dbuf, sizeof(dbuf), " FAILED errno=%d (%s)\n", errno, strerror(errno));
+    this->diag_info_ += dbuf;
+    ESP_LOGW(TAG, "VIDIOC_S_FMT RGB565 failed: errno=%d (%s)", errno, strerror(errno));
+
+    // Try setting the device's default format from G_FMT
+    bool fallback_ok = false;
+    if (open_devs[chosen_idx].default_fmt != 0) {
+      struct v4l2_format def_fmt = {};
+      def_fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+      def_fmt.fmt.pix.width = open_devs[chosen_idx].default_w;
+      def_fmt.fmt.pix.height = open_devs[chosen_idx].default_h;
+      def_fmt.fmt.pix.pixelformat = open_devs[chosen_idx].default_fmt;
+
+      snprintf(dbuf, sizeof(dbuf), "Calling S_FMT with default (%dx%d, 0x%08x)...",
+               def_fmt.fmt.pix.width, def_fmt.fmt.pix.height, (unsigned int)def_fmt.fmt.pix.pixelformat);
+      this->diag_info_ += dbuf;
+
+      if (ioctl(this->video_fd_, VIDIOC_S_FMT, &def_fmt) == 0) {
+        this->diag_info_ += " OK!\n";
+        req_fmt = def_fmt;
+        fallback_ok = true;
+      } else {
+        snprintf(dbuf, sizeof(dbuf), " FAILED errno=%d (%s)\n", errno, strerror(errno));
+        this->diag_info_ += dbuf;
       }
-      req_fmt = def_fmt;
-    } else {
+    }
+
+    if (!fallback_ok && open_devs[chosen_idx].first_fmt != 0) {
+      struct v4l2_format first_fmt = {};
+      first_fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+      first_fmt.fmt.pix.width = SENSOR_WIDTH;
+      first_fmt.fmt.pix.height = SENSOR_HEIGHT;
+      first_fmt.fmt.pix.pixelformat = open_devs[chosen_idx].first_fmt;
+
+      snprintf(dbuf, sizeof(dbuf), "Calling S_FMT with first enumerated fmt (0x%08x)...",
+               (unsigned int)first_fmt.fmt.pix.pixelformat);
+      this->diag_info_ += dbuf;
+
+      if (ioctl(this->video_fd_, VIDIOC_S_FMT, &first_fmt) == 0) {
+        this->diag_info_ += " OK!\n";
+        req_fmt = first_fmt;
+        fallback_ok = true;
+      } else {
+        snprintf(dbuf, sizeof(dbuf), " FAILED errno=%d (%s)\n", errno, strerror(errno));
+        this->diag_info_ += dbuf;
+      }
+    }
+
+    if (!fallback_ok) {
       char buf[64];
       snprintf(buf, sizeof(buf), "VIDIOC_S_FMT failed: errno=%d", errno);
       this->status_msg_ = buf;
@@ -268,9 +314,13 @@ void P4CSICamera::setup() {
       this->mark_failed();
       return;
     }
+  } else {
+    this->diag_info_ += " OK!\n";
   }
 
   // Re-read format to see what was committed
+  struct v4l2_format fmt = {};
+  fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   if (ioctl(this->video_fd_, VIDIOC_G_FMT, &fmt) == 0) {
     char fourcc[5] = {
       (char)((fmt.fmt.pix.pixelformat >> 0) & 0xFF),
@@ -279,8 +329,10 @@ void P4CSICamera::setup() {
       (char)((fmt.fmt.pix.pixelformat >> 24) & 0xFF),
       0
     };
-    ESP_LOGI(TAG, "Actual format after S_FMT: %dx%d, pixfmt='%s' (0x%08x)",
-             fmt.fmt.pix.width, fmt.fmt.pix.height, fourcc, fmt.fmt.pix.pixelformat);
+    snprintf(dbuf, sizeof(dbuf), "Final format after S_FMT: %dx%d, pixfmt='%s' (0x%08x)\n",
+             fmt.fmt.pix.width, fmt.fmt.pix.height, fourcc, (unsigned int)fmt.fmt.pix.pixelformat);
+    this->diag_info_ += dbuf;
+    ESP_LOGI(TAG, "%s", dbuf);
     this->frame_width_ = fmt.fmt.pix.width;
     this->frame_height_ = fmt.fmt.pix.height;
   } else {
@@ -531,6 +583,7 @@ void P4CSICamera::loop() {
 
 void P4CSICamera::dump_config() {
   ESP_LOGCONFIG(TAG, "ESP32-P4 CSI Camera (OV02C10):");
+  ESP_LOGCONFIG(TAG, "  Device: %s (fd=%d)", this->chosen_path_.c_str(), this->video_fd_);
   ESP_LOGCONFIG(TAG, "  Resolution: %dx%d", this->frame_width_, this->frame_height_);
   ESP_LOGCONFIG(TAG, "  Data Lanes: %d", this->data_lanes_);
   ESP_LOGCONFIG(TAG, "  Max Update Interval: %d ms", this->max_update_interval_);
@@ -538,6 +591,20 @@ void P4CSICamera::dump_config() {
   ESP_LOGCONFIG(TAG, "  Status: %s", this->status_msg_.c_str());
   if (this->is_failed()) {
     ESP_LOGE(TAG, "  Camera FAILED: %s", this->status_msg_.c_str());
+  }
+  if (!this->diag_info_.empty()) {
+    ESP_LOGI(TAG, "--- Diagnostics Begin ---");
+    size_t start = 0;
+    while (start < this->diag_info_.size()) {
+      size_t end = this->diag_info_.find('\n', start);
+      if (end == std::string::npos) end = this->diag_info_.size();
+      std::string line = this->diag_info_.substr(start, end - start);
+      if (!line.empty()) {
+        ESP_LOGI(TAG, "  %s", line.c_str());
+      }
+      start = end + 1;
+    }
+    ESP_LOGI(TAG, "--- Diagnostics End ---");
   }
 }
 
