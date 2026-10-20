@@ -68,6 +68,14 @@ void P4CSICameraImageReader::return_image() {
 // P4CSICamera
 // ===========================================================================
 
+#if defined(USE_ESP32_FRAMEWORK_ESP_IDF)
+#define protected public
+#define private public
+#include "esphome/components/i2c/i2c_bus_esp_idf.h"
+#undef protected
+#undef private
+#endif
+
 P4CSICamera::P4CSICamera() { global_p4_csi_camera = this; }
 
 void P4CSICamera::setup() {
@@ -77,11 +85,23 @@ void P4CSICamera::setup() {
 
   // Step 1: Initialize the video subsystem (handles CSI + ISP + sensor detection)
   esp_video_init_csi_config_t csi_config = {};
-  csi_config.sccb_config.init_sccb = true;  // Let esp_video manage sensor I2C
-  csi_config.sccb_config.i2c_config.port = 0;  // Port 0 - same as where sensor lives
-  csi_config.sccb_config.i2c_config.scl_pin = (gpio_num_t)8;
-  csi_config.sccb_config.i2c_config.sda_pin = (gpio_num_t)7;
-  csi_config.sccb_config.freq = 100000;
+#if defined(USE_ESP32_FRAMEWORK_ESP_IDF)
+  if (this->i2c_bus_ != nullptr) {
+    ESP_LOGI(TAG, "  Using shared ESPHome I2C bus for sensor SCCB");
+    auto *idf_bus = static_cast<esphome::i2c::IDFI2CBus *>(this->i2c_bus_);
+    csi_config.sccb_config.init_sccb = false;
+    csi_config.sccb_config.i2c_handle = idf_bus->bus_;
+    csi_config.sccb_config.freq = 100000;
+  } else {
+#endif
+    csi_config.sccb_config.init_sccb = true;  // Let esp_video manage sensor I2C
+    csi_config.sccb_config.i2c_config.port = 0;  // Port 0 - same as where sensor lives
+    csi_config.sccb_config.i2c_config.scl_pin = (gpio_num_t)8;
+    csi_config.sccb_config.i2c_config.sda_pin = (gpio_num_t)7;
+    csi_config.sccb_config.freq = 100000;
+#if defined(USE_ESP32_FRAMEWORK_ESP_IDF)
+  }
+#endif
   csi_config.reset_pin = (gpio_num_t)-1;  // No reset pin
   csi_config.pwdn_pin = (gpio_num_t)-1;   // No power down pin
 
@@ -90,7 +110,7 @@ void P4CSICamera::setup() {
 
   esp_err_t err = esp_video_init(&cam_config);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "esp_video_init failed: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "esp_video_init failed: %s (0x%x)", esp_err_to_name(err), err);
     this->mark_failed();
     return;
   }

@@ -5,6 +5,7 @@
 #include "esphome/core/component.h"
 #include "esphome/core/automation.h"
 #include "esphome/components/camera/camera.h"
+#include "esphome/components/i2c/i2c_bus.h"
 #include "esphome/core/helpers.h"
 
 #include <vector>
@@ -60,6 +61,7 @@ class P4CSICamera : public camera::Camera {
  public:
   P4CSICamera();
 
+  void set_i2c_bus(i2c::I2CBus *bus) { this->i2c_bus_ = bus; }
   void set_data_lanes(uint8_t lanes) { this->data_lanes_ = lanes; }
   void set_max_update_interval(uint32_t interval) { this->max_update_interval_ = interval; }
   void set_idle_update_interval(uint32_t interval) { this->idle_update_interval_ = interval; }
@@ -94,6 +96,7 @@ class P4CSICamera : public camera::Camera {
   bool has_requested_image_() const;
 
   // Configuration
+  i2c::I2CBus *i2c_bus_{nullptr};
   uint8_t data_lanes_{2};
   int8_t reset_pin_{-1};
   int8_t power_pin_{-1};

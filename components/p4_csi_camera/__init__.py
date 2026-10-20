@@ -2,6 +2,7 @@
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
+from esphome.components import i2c
 from esphome.const import CONF_ID, CONF_RESOLUTION
 from esphome.components.esp32 import add_idf_sdkconfig_option, add_idf_component
 
@@ -40,6 +41,7 @@ CONFIG_SCHEMA = (
     cv.ENTITY_BASE_SCHEMA.extend(
         {
             cv.GenerateID(): cv.declare_id(P4CSICamera),
+            cv.Optional(CONF_I2C_ID): cv.use_id(i2c.I2CBus),
             cv.Optional(CONF_RESOLUTION, default="1928X1092"): cv.one_of(
                 *RESOLUTIONS, upper=True
             ),
@@ -66,6 +68,10 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await setup_entity(var, config, "camera")
     await cg.register_component(var, config)
+
+    if CONF_I2C_ID in config:
+        i2c_var = await cg.get_variable(config[CONF_I2C_ID])
+        cg.add(var.set_i2c_bus(i2c_var))
 
     cg.add(var.set_data_lanes(config[CONF_DATA_LANES]))
     cg.add(var.set_max_update_interval(int(1000 / config[CONF_MAX_FRAMERATE])))
