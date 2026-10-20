@@ -1,6 +1,9 @@
 #pragma once
 
 #ifdef USE_ESP32_VARIANT_ESP32P4
+#ifndef USE_ESP_IDF
+#error "p4_csi_camera requires the ESP-IDF framework."
+#endif
 
 #include "esphome/core/component.h"
 #include "esphome/core/automation.h"
