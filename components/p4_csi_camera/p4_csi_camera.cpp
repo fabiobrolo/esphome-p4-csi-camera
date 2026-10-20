@@ -4,23 +4,35 @@
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
 
-#if defined(USE_ESP32_FRAMEWORK_ESP_IDF)
-#include "esphome/components/i2c/i2c_bus_esp_idf.h"
-#endif
+#include "esp_err.h"
+#include "esp_log.h"
+#include "esp_video_init.h"
+#include "esp_task_wdt.h"
+#include "linux/videodev2.h"
+#include "driver/jpeg_encode.h"
+#include "esp_cam_sensor_detect.h"
+#include "ov02c10.h"
 
-#include <sys/ioctl.h>
+// Force symbol reference so linker extracts ov02c10_sensor.o from static library
+extern "C" esp_cam_sensor_device_t *ov02c10_detect(esp_cam_sensor_config_t *config);
+void *const force_ov02c10_link_ref __attribute__((used)) = (void *)ov02c10_detect;
+
 #include <fcntl.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <string.h>
 #include <unistd.h>
-#include <linux/videodev2.h>
 #include <cmath>
 #include <algorithm>
 
-#include "esp_video_init.h"
-#include "esp_video_device.h"
-#include "esp_video_ioctl.h"
-#include "esp_cam_sensor_detect.h"
-#include "ov02c10.h"
-#include "esp_task_wdt.h"
+#if defined(USE_ESP32_FRAMEWORK_ESP_IDF)
+#include "esphome/components/i2c/i2c_bus.h"
+#define protected public
+#define private public
+#include "esphome/components/i2c/i2c_bus_esp_idf.h"
+#undef protected
+#undef private
+#endif
 
 namespace esphome {
 namespace p4_csi_camera {
