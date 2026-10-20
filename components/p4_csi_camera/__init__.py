@@ -93,6 +93,8 @@ async def to_code(config):
     cg.add(var.set_horizontal_flip(config[CONF_HORIZONTAL_FLIP]))
 
     cg.add_define("USE_P4_CSI_CAMERA")
+    cg.add_build_flag("-u")
+    cg.add_build_flag("ov02c10_detect")
 
     # ESP-IDF SDK config options needed for CSI camera
     for opt, val in {

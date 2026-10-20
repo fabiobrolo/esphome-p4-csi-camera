@@ -11,6 +11,12 @@
 #include "esp_task_wdt.h"
 #include "linux/videodev2.h"
 #include "driver/jpeg_encode.h"
+#include "esp_cam_sensor_detect.h"
+#include "ov02c10.h"
+
+// Force symbol reference so linker does not dead-strip ov02c10_sensor.o
+extern "C" esp_cam_sensor_device_t *ov02c10_detect(esp_cam_sensor_config_t *config);
+static void *volatile force_ov02c10_link_ref = (void *)ov02c10_detect;
 
 #include <fcntl.h>
 #include <sys/ioctl.h>
@@ -147,10 +153,36 @@ void P4CSICamera::setup() {
   this->diag_info_ += "=== P4 CSI Video Devices ===\n";
   char dbuf[256];
 
+  volatile void *force_ov02c10 = (void *)ov02c10_detect;
+  (void)force_ov02c10;
+
+  extern const esp_cam_sensor_detect_fn_t __esp_cam_sensor_detect_fn_array_start[];
+  extern const esp_cam_sensor_detect_fn_t __esp_cam_sensor_detect_fn_array_end[];
+  size_t num_detect_fn = __esp_cam_sensor_detect_fn_array_end - __esp_cam_sensor_detect_fn_array_start;
+  snprintf(dbuf, sizeof(dbuf), "Registered cam sensor detect functions: %d\n", (int)num_detect_fn);
+  this->diag_info_ += dbuf;
+  for (size_t i = 0; i < num_detect_fn; i++) {
+    snprintf(dbuf, sizeof(dbuf), "  detect_fn[%d]: port=%d, sccb_addr=0x%02x, fn=%p\n",
+             (int)i, __esp_cam_sensor_detect_fn_array_start[i].port,
+             __esp_cam_sensor_detect_fn_array_start[i].sccb_addr,
+             (void*)__esp_cam_sensor_detect_fn_array_start[i].detect);
+    this->diag_info_ += dbuf;
+  }
+
   for (const char *path : dev_paths) {
     int fd = open(path, O_RDWR, 0);
     if (fd < 0) {
-      continue;
+      int err = errno;
+      int fd_ro = open(path, O_RDONLY, 0);
+      if (fd_ro >= 0) {
+        fd = fd_ro;
+        snprintf(dbuf, sizeof(dbuf), "Device %s: opened with O_RDONLY (fd=%d)\n", path, fd);
+        this->diag_info_ += dbuf;
+      } else {
+        snprintf(dbuf, sizeof(dbuf), "Device %s: open failed errno=%d (%s)\n", path, err, strerror(err));
+        this->diag_info_ += dbuf;
+        continue;
+      }
     }
 
     OpenDev dev = {};
@@ -224,13 +256,27 @@ void P4CSICamera::setup() {
     return;
   }
 
-  // Choose the best device: prefer one that supports RGB565 directly
-  int chosen_idx = 0;
+  // Choose the best device: skip metadata devices like /dev/video20
+  int chosen_idx = -1;
   for (size_t i = 0; i < open_devs.size(); i++) {
+    if (strcmp(open_devs[i].path, "/dev/video20") == 0 && open_devs.size() > 1) {
+      continue;
+    }
     if (open_devs[i].supports_rgb565) {
       chosen_idx = i;
       break;
     }
+  }
+  if (chosen_idx < 0) {
+    for (size_t i = 0; i < open_devs.size(); i++) {
+      if (strcmp(open_devs[i].path, "/dev/video20") != 0) {
+        chosen_idx = i;
+        break;
+      }
+    }
+  }
+  if (chosen_idx < 0 && !open_devs.empty()) {
+    chosen_idx = 0;
   }
 
   this->video_fd_ = open_devs[chosen_idx].fd;
