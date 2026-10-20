@@ -32,7 +32,9 @@ P4CSICamera = p4_csi_camera_ns.class_(
 )
 
 RESOLUTIONS = {
+    "1920X1080": 0,
     "1928X1092": 0,
+    "1288X728": 1,
     "1280X720": 1,
     "640X480": 2,
 }
@@ -42,7 +44,7 @@ CONFIG_SCHEMA = (
         {
             cv.GenerateID(): cv.declare_id(P4CSICamera),
             cv.Optional(CONF_I2C_ID): cv.use_id(i2c.I2CBus),
-            cv.Optional(CONF_RESOLUTION, default="1928X1092"): cv.one_of(
+            cv.Optional(CONF_RESOLUTION, default="1920X1080"): cv.one_of(
                 *RESOLUTIONS, upper=True
             ),
             cv.Optional(CONF_DATA_LANES, default=2): cv.int_range(min=1, max=2),

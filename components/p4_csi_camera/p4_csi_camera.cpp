@@ -32,9 +32,9 @@ namespace p4_csi_camera {
 
 static const char *const TAG = "p4_csi_camera";
 
-static constexpr int NUM_FRAME_BUFFERS = 4;
-static constexpr uint16_t SENSOR_WIDTH = 1928;
-static constexpr uint16_t SENSOR_HEIGHT = 1092;
+static constexpr int NUM_FRAME_BUFFERS = 2;
+static constexpr uint16_t SENSOR_WIDTH = 1920;
+static constexpr uint16_t SENSOR_HEIGHT = 1080;
 
 P4CSICamera *global_p4_csi_camera = nullptr;  // NOLINT
 
@@ -200,39 +200,93 @@ void P4CSICamera::setup() {
   this->video_fd_ = chosen_fd;
   ESP_LOGI(TAG, "Selected video device: %s (fd=%d)", chosen_path, this->video_fd_);
 
-  // Step 3: Set the pixel format
+  // Step 3: Enumerate and set pixel format
+  struct v4l2_fmtdesc fmtdesc = {};
+  fmtdesc.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  fmtdesc.index = 0;
+  ESP_LOGI(TAG, "Supported formats for %s:", chosen_path);
+  while (ioctl(this->video_fd_, VIDIOC_ENUM_FMT, &fmtdesc) == 0) {
+    char fourcc_desc[5] = {
+      (char)((fmtdesc.pixelformat >> 0) & 0xFF),
+      (char)((fmtdesc.pixelformat >> 8) & 0xFF),
+      (char)((fmtdesc.pixelformat >> 16) & 0xFF),
+      (char)((fmtdesc.pixelformat >> 24) & 0xFF),
+      0
+    };
+    ESP_LOGI(TAG, "  [%d] '%s' (0x%08x) - %s",
+             fmtdesc.index, fourcc_desc, fmtdesc.pixelformat, fmtdesc.description);
+    fmtdesc.index++;
+  }
+
   struct v4l2_format fmt = {};
   fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  if (ioctl(this->video_fd_, VIDIOC_G_FMT, &fmt) != 0) {
-    ESP_LOGW(TAG, "VIDIOC_G_FMT failed on %s (errno=%d, %s), setting default format directly",
-             chosen_path, errno, strerror(errno));
-    fmt.fmt.pix.width = SENSOR_WIDTH;
-    fmt.fmt.pix.height = SENSOR_HEIGHT;
-  } else {
-    ESP_LOGI(TAG, "Default format: %dx%d, pixfmt=0x%08x",
-             fmt.fmt.pix.width, fmt.fmt.pix.height, fmt.fmt.pix.pixelformat);
-  }
-
-  // Request RGB565 output format
-  fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_RGB565;
-  if (ioctl(this->video_fd_, VIDIOC_S_FMT, &fmt) != 0) {
-    ESP_LOGW(TAG, "VIDIOC_S_FMT RGB565 failed (errno=%d, %s), trying default format", errno, strerror(errno));
-  }
-
-  // Re-read format to see what we actually got
   if (ioctl(this->video_fd_, VIDIOC_G_FMT, &fmt) == 0) {
-    char fourcc[5] = {};
-    fourcc[0] = (fmt.fmt.pix.pixelformat >> 0) & 0xFF;
-    fourcc[1] = (fmt.fmt.pix.pixelformat >> 8) & 0xFF;
-    fourcc[2] = (fmt.fmt.pix.pixelformat >> 16) & 0xFF;
-    fourcc[3] = (fmt.fmt.pix.pixelformat >> 24) & 0xFF;
+    char fourcc_cur[5] = {
+      (char)((fmt.fmt.pix.pixelformat >> 0) & 0xFF),
+      (char)((fmt.fmt.pix.pixelformat >> 8) & 0xFF),
+      (char)((fmt.fmt.pix.pixelformat >> 16) & 0xFF),
+      (char)((fmt.fmt.pix.pixelformat >> 24) & 0xFF),
+      0
+    };
+    ESP_LOGI(TAG, "Default driver format: %dx%d, pixfmt='%s' (0x%08x)",
+             fmt.fmt.pix.width, fmt.fmt.pix.height, fourcc_cur, fmt.fmt.pix.pixelformat);
+  }
+
+  // Request RGB565 output format at native sensor resolution
+  struct v4l2_format req_fmt = {};
+  req_fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  req_fmt.fmt.pix.width = SENSOR_WIDTH;
+  req_fmt.fmt.pix.height = SENSOR_HEIGHT;
+  req_fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_RGB565;
+
+  if (ioctl(this->video_fd_, VIDIOC_S_FMT, &req_fmt) != 0) {
+    ESP_LOGW(TAG, "VIDIOC_S_FMT RGB565 (%dx%d) failed (errno=%d, %s)",
+             SENSOR_WIDTH, SENSOR_HEIGHT, errno, strerror(errno));
+
+    // Fallback: try setting the driver's default format from G_FMT
+    struct v4l2_format def_fmt = {};
+    def_fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    if (ioctl(this->video_fd_, VIDIOC_G_FMT, &def_fmt) == 0) {
+      ESP_LOGI(TAG, "Trying fallback to driver format: %dx%d, pixfmt=0x%08x",
+               def_fmt.fmt.pix.width, def_fmt.fmt.pix.height, def_fmt.fmt.pix.pixelformat);
+      if (ioctl(this->video_fd_, VIDIOC_S_FMT, &def_fmt) != 0) {
+        ESP_LOGE(TAG, "VIDIOC_S_FMT default format fallback failed (errno=%d, %s)",
+                 errno, strerror(errno));
+        char buf[64];
+        snprintf(buf, sizeof(buf), "VIDIOC_S_FMT failed: errno=%d", errno);
+        this->status_msg_ = buf;
+        this->status_set_error(LOG_STR("VIDIOC_S_FMT failed"));
+        this->mark_failed();
+        return;
+      }
+      req_fmt = def_fmt;
+    } else {
+      char buf[64];
+      snprintf(buf, sizeof(buf), "VIDIOC_S_FMT failed: errno=%d", errno);
+      this->status_msg_ = buf;
+      this->status_set_error(LOG_STR("VIDIOC_S_FMT failed"));
+      this->mark_failed();
+      return;
+    }
+  }
+
+  // Re-read format to see what was committed
+  if (ioctl(this->video_fd_, VIDIOC_G_FMT, &fmt) == 0) {
+    char fourcc[5] = {
+      (char)((fmt.fmt.pix.pixelformat >> 0) & 0xFF),
+      (char)((fmt.fmt.pix.pixelformat >> 8) & 0xFF),
+      (char)((fmt.fmt.pix.pixelformat >> 16) & 0xFF),
+      (char)((fmt.fmt.pix.pixelformat >> 24) & 0xFF),
+      0
+    };
     ESP_LOGI(TAG, "Actual format after S_FMT: %dx%d, pixfmt='%s' (0x%08x)",
              fmt.fmt.pix.width, fmt.fmt.pix.height, fourcc, fmt.fmt.pix.pixelformat);
+    this->frame_width_ = fmt.fmt.pix.width;
+    this->frame_height_ = fmt.fmt.pix.height;
+  } else {
+    this->frame_width_ = req_fmt.fmt.pix.width;
+    this->frame_height_ = req_fmt.fmt.pix.height;
   }
-
-  this->frame_width_ = fmt.fmt.pix.width;
-  this->frame_height_ = fmt.fmt.pix.height;
   ESP_LOGI(TAG, "Using format: %dx%d", this->frame_width_, this->frame_height_);
 
   // Step 4: Request frame buffers
@@ -241,9 +295,9 @@ void P4CSICamera::setup() {
   req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   req.memory = V4L2_MEMORY_MMAP;
 
-  if (ioctl(this->video_fd_, VIDIOC_REQBUFS, &req) != 0) {
+  if (ioctl(this->video_fd_, VIDIOC_REQBUFS, &req) != 0 || req.count == 0) {
     char buf[64];
-    snprintf(buf, sizeof(buf), "VIDIOC_REQBUFS failed: errno=%d", errno);
+    snprintf(buf, sizeof(buf), "VIDIOC_REQBUFS failed: errno=%d, count=%d", errno, req.count);
     this->status_msg_ = buf;
     ESP_LOGE(TAG, "%s", buf);
     this->status_set_error(LOG_STR("VIDIOC_REQBUFS failed"));
@@ -251,8 +305,11 @@ void P4CSICamera::setup() {
     return;
   }
 
+  uint32_t actual_buffers = req.count;
+  ESP_LOGI(TAG, "VIDIOC_REQBUFS allocated %d buffers", (int)actual_buffers);
+
   // Step 5: Map frame buffers
-  for (int i = 0; i < NUM_FRAME_BUFFERS; i++) {
+  for (uint32_t i = 0; i < actual_buffers; i++) {
     struct v4l2_buffer buf = {};
     buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     buf.memory = V4L2_MEMORY_MMAP;
@@ -260,7 +317,7 @@ void P4CSICamera::setup() {
 
     if (ioctl(this->video_fd_, VIDIOC_QUERYBUF, &buf) != 0) {
       char ebuf[64];
-      snprintf(ebuf, sizeof(ebuf), "VIDIOC_QUERYBUF failed for buf %d", i);
+      snprintf(ebuf, sizeof(ebuf), "VIDIOC_QUERYBUF failed for buf %d (errno=%d)", (int)i, errno);
       this->status_msg_ = ebuf;
       ESP_LOGE(TAG, "%s", ebuf);
       this->status_set_error(LOG_STR("VIDIOC_QUERYBUF failed"));
@@ -270,9 +327,9 @@ void P4CSICamera::setup() {
 
     this->frame_buffers_[i] = (uint8_t *)mmap(NULL, buf.length,
         PROT_READ | PROT_WRITE, MAP_SHARED, this->video_fd_, buf.m.offset);
-    if (this->frame_buffers_[i] == nullptr) {
+    if (this->frame_buffers_[i] == nullptr || this->frame_buffers_[i] == MAP_FAILED) {
       char ebuf[64];
-      snprintf(ebuf, sizeof(ebuf), "mmap failed for buf %d", i);
+      snprintf(ebuf, sizeof(ebuf), "mmap failed for buf %d (errno=%d)", (int)i, errno);
       this->status_msg_ = ebuf;
       ESP_LOGE(TAG, "%s", ebuf);
       this->status_set_error(LOG_STR("mmap failed"));
@@ -284,7 +341,7 @@ void P4CSICamera::setup() {
     // Queue the buffer
     if (ioctl(this->video_fd_, VIDIOC_QBUF, &buf) != 0) {
       char ebuf[64];
-      snprintf(ebuf, sizeof(ebuf), "VIDIOC_QBUF failed for buf %d", i);
+      snprintf(ebuf, sizeof(ebuf), "VIDIOC_QBUF failed for buf %d (errno=%d)", (int)i, errno);
       this->status_msg_ = ebuf;
       ESP_LOGE(TAG, "%s", ebuf);
       this->status_set_error(LOG_STR("VIDIOC_QBUF failed"));
@@ -293,7 +350,7 @@ void P4CSICamera::setup() {
     }
   }
 
-  ESP_LOGI(TAG, "Mapped %d frame buffers (%d bytes each)", NUM_FRAME_BUFFERS, this->frame_buf_size_);
+  ESP_LOGI(TAG, "Mapped %d frame buffers (%d bytes each)", (int)actual_buffers, (int)this->frame_buf_size_);
 
   // Step 6: Start streaming
   int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
